@@ -1,5 +1,8 @@
 # MemKit
 
+Thanks @cheat_and_math for the upgrade im building upon ur library
+(`I made it easier to manipulate with commands.`)
+
 A small, modern C++ (C++20) wrapper around the Win32 process-memory APIs
 (`ReadProcessMemory`, `WriteProcessMemory`, `VirtualAllocEx`, `Toolhelp32`, ...).
 
