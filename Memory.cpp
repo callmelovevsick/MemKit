@@ -3,18 +3,12 @@
 namespace mem {
 namespace {
 
-// Case-insensitive wide string comparison that does not require
-// `a` to be null-terminated (unlike _wcsicmp).
 bool iequals(std::wstring_view a, std::wstring_view b) noexcept {
     if (a.size() != b.size()) return false;
     return _wcsnicmp(a.data(), b.data(), a.size()) == 0;
 }
 
-} // namespace
-
-// ------------------------------------------------------------------
-// Attach / detach
-// ------------------------------------------------------------------
+} 
 
 bool Memory::attach(std::wstring_view processName, DWORD access) noexcept {
     detach();
@@ -60,7 +54,6 @@ bool Memory::attach(DWORD processId, DWORD access) noexcept {
     pid_ = processId;
     processName_.clear();
 
-    // Best-effort: resolve the executable name for processName().
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W entry{};
@@ -87,7 +80,7 @@ bool Memory::attach(HANDLE existingHandle) noexcept {
         return false;
     }
 
-    handle_ = existingHandle; // Memory now owns this handle
+    handle_ = existingHandle; 
     pid_ = GetProcessId(existingHandle);
     processName_.clear();
     return true;
@@ -101,10 +94,6 @@ void Memory::detach() noexcept {
     pid_ = 0;
     processName_.clear();
 }
-
-// ------------------------------------------------------------------
-// Modules
-// ------------------------------------------------------------------
 
 std::optional<Module> Memory::getModule(std::wstring_view moduleName) const noexcept {
     if (!pid_) {
@@ -165,10 +154,6 @@ std::vector<Module> Memory::modules() const noexcept {
     return result;
 }
 
-// ------------------------------------------------------------------
-// Process enumeration
-// ------------------------------------------------------------------
-
 std::vector<ProcessEntry> Memory::processes() noexcept {
     std::vector<ProcessEntry> result;
 
@@ -185,10 +170,6 @@ std::vector<ProcessEntry> Memory::processes() noexcept {
     CloseHandle(snapshot);
     return result;
 }
-
-// ------------------------------------------------------------------
-// Raw read / write helpers used by the read<T>() / write<T>() templates
-// ------------------------------------------------------------------
 
 bool Memory::readRaw(uintptr_t address, void* buffer, size_t size) const noexcept {
     if (!handle_ || !address || !buffer) {
@@ -219,10 +200,6 @@ bool Memory::writeRaw(uintptr_t address, const void* buffer, size_t size) const 
     }
     return true;
 }
-
-// ------------------------------------------------------------------
-// Bytes / strings
-// ------------------------------------------------------------------
 
 std::vector<uint8_t> Memory::readBytes(uintptr_t address, size_t size) const noexcept {
     std::vector<uint8_t> buffer(size);
@@ -280,10 +257,6 @@ bool Memory::writeString(uintptr_t address, std::string_view text) const noexcep
     buffer.push_back('\0');
     return writeRaw(address, buffer.data(), buffer.size());
 }
-
-// ------------------------------------------------------------------
-// Protection / allocation
-// ------------------------------------------------------------------
 
 bool Memory::protect(uintptr_t address, size_t size, DWORD newProtect, DWORD* oldProtect) noexcept {
     if (!handle_) {

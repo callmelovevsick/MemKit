@@ -1,9 +1,3 @@
-// Memory.hpp
-// A small, modern C++ wrapper around the Win32 process-memory APIs
-// (ReadProcessMemory / WriteProcessMemory / VirtualAllocEx / ...).
-//
-// Design goals: short names, chainable pointer resolution, RAII for
-// handles and protection changes, std::optional for fallible lookups.
 #pragma once
 
 #include <Windows.h>
@@ -20,11 +14,8 @@
 
 namespace mem {
 
-class Memory; // forward declaration, needed by Pointer / MemoryProtectionGuard
+class Memory; 
 
-// ------------------------------------------------------------------
-// Protection  -  strongly typed wrapper around the PAGE_* constants
-// ------------------------------------------------------------------
 enum class Protection : DWORD {
     NoAccess         = PAGE_NOACCESS,
     ReadOnly         = PAGE_READONLY,
@@ -38,17 +29,11 @@ enum class Protection : DWORD {
     return static_cast<DWORD>(protection);
 }
 
-// ------------------------------------------------------------------
-// ProcessEntry  -  one row returned by Memory::processes()
-// ------------------------------------------------------------------
 struct ProcessEntry {
     DWORD pid = 0;
     std::wstring name;
 };
 
-// ------------------------------------------------------------------
-// Module  -  read-only view of a module inside the attached process
-// ------------------------------------------------------------------
 class Module {
 public:
     Module() noexcept = default;
@@ -74,22 +59,11 @@ private:
     size_t size_ = 0;
 };
 
-// ------------------------------------------------------------------
-// Pointer  -  chainable multi-level pointer resolver
-//
-// Semantics match the original pointer_resolve(): every offset() call
-// dereferences the *current* address first and then adds the offset,
-// so the value you start the chain with must itself be a location
-// that holds a pointer (e.g. a module base + static offset).
-// ------------------------------------------------------------------
 class Pointer {
 public:
     Pointer(Memory& memory, uintptr_t address) noexcept
         : memory_(&memory), address_(address), valid_(address != 0) {}
 
-    // Dereferences the current address and adds `offset` to the result.
-    // If a dereference along the way yields 0, the chain becomes
-    // invalid and every following call is a cheap no-op.
     Pointer& offset(uintptr_t offset) noexcept;
 
     [[nodiscard]] uintptr_t address() const noexcept { return address_; }
@@ -111,12 +85,6 @@ private:
     bool valid_;
 };
 
-// ------------------------------------------------------------------
-// MemoryProtectionGuard  -  RAII wrapper for VirtualProtectEx
-//
-// Restores the original page protection when the guard goes out of
-// scope, unless dismiss() was called.
-// ------------------------------------------------------------------
 class MemoryProtectionGuard {
 public:
     MemoryProtectionGuard() noexcept = default;
@@ -129,10 +97,8 @@ public:
     MemoryProtectionGuard(MemoryProtectionGuard&& other) noexcept { *this = std::move(other); }
     MemoryProtectionGuard& operator=(MemoryProtectionGuard&& other) noexcept;
 
-    // Restores the original protection right now (safe to call more than once).
     void restore() noexcept;
 
-    // Keeps the new protection permanently; the destructor will no longer restore it.
     void dismiss() noexcept { active_ = false; }
 
     [[nodiscard]] bool active() const noexcept { return active_; }
@@ -145,9 +111,6 @@ private:
     bool active_ = false;
 };
 
-// ------------------------------------------------------------------
-// Memory  -  attaches to a process and reads/writes its memory
-// ------------------------------------------------------------------
 class Memory {
 public:
     Memory() noexcept = default;
@@ -159,30 +122,22 @@ public:
     Memory(Memory&& other) noexcept { *this = std::move(other); }
     Memory& operator=(Memory&& other) noexcept;
 
-    // ---- Attach / detach ----------------------------------------
     bool attach(std::wstring_view processName, DWORD access = PROCESS_ALL_ACCESS) noexcept;
     bool attach(DWORD processId, DWORD access = PROCESS_ALL_ACCESS) noexcept;
-    bool attach(HANDLE existingHandle) noexcept; // takes ownership of existingHandle
+    bool attach(HANDLE existingHandle) noexcept; 
     void detach() noexcept;
     [[nodiscard]] bool isAttached() const noexcept { return handle_ != nullptr; }
 
-    // ---- Identity --------------------------------------------------
     [[nodiscard]] DWORD pid() const noexcept { return pid_; }
     [[nodiscard]] HANDLE handle() const noexcept { return handle_; }
     [[nodiscard]] const std::wstring& processName() const noexcept { return processName_; }
 
-    // ---- Modules -----------------------------------------------------
     [[nodiscard]] std::optional<Module> getModule(std::wstring_view moduleName) const noexcept;
-    // Convenience version for chaining: returns an (invalid) default
-    // Module if not found instead of an optional. Check .valid() or
-    // .base() != 0, or use getModule() if you want a hard error signal.
     [[nodiscard]] Module module(std::wstring_view moduleName) const noexcept;
     [[nodiscard]] std::vector<Module> modules() const noexcept;
 
-    // ---- Process enumeration (does not require attach()) ------------
     [[nodiscard]] static std::vector<ProcessEntry> processes() noexcept;
 
-    // ---- Typed read / write ------------------------------------------
     template <typename T>
     [[nodiscard]] T read(uintptr_t address) const noexcept {
         static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
@@ -191,7 +146,6 @@ public:
         return value;
     }
 
-    // Same as read<T>(), but tells you whether the read actually succeeded.
     template <typename T>
     [[nodiscard]] std::optional<T> tryRead(uintptr_t address) const noexcept {
         static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
@@ -206,7 +160,6 @@ public:
         return writeRaw(address, &value, sizeof(T));
     }
 
-    // ---- Raw bytes / strings ------------------------------------------
     [[nodiscard]] std::vector<uint8_t> readBytes(uintptr_t address, size_t size) const noexcept;
     bool writeBytes(uintptr_t address, std::span<const uint8_t> bytes) const noexcept;
 
@@ -214,18 +167,14 @@ public:
     [[nodiscard]] std::optional<std::wstring> readStringW(uintptr_t address, size_t maxLength = 256) const noexcept;
     bool writeString(uintptr_t address, std::string_view text) const noexcept;
 
-    // ---- Pointers -------------------------------------------------------
     [[nodiscard]] uintptr_t dereference(uintptr_t address) const noexcept { return read<uintptr_t>(address); }
     [[nodiscard]] Pointer pointer(uintptr_t base) noexcept { return Pointer(*this, base); }
 
-    // ---- Protection / allocation ------------------------------------------
     bool protect(uintptr_t address, size_t size, DWORD newProtect, DWORD* oldProtect = nullptr) noexcept;
     bool protect(uintptr_t address, size_t size, Protection newProtect, DWORD* oldProtect = nullptr) noexcept {
         return protect(address, size, toWin32(newProtect), oldProtect);
     }
 
-    // Changes protection now, restores the previous value automatically
-    // when the returned guard is destroyed (or call .dismiss() to keep it).
     [[nodiscard]] MemoryProtectionGuard scopedProtect(uintptr_t address, size_t size, DWORD newProtect) noexcept {
         return MemoryProtectionGuard(*this, address, size, newProtect);
     }
@@ -239,8 +188,6 @@ public:
     }
     bool free(uintptr_t address) noexcept;
 
-    // ---- Diagnostics -------------------------------------------------------
-    // Win32 error code (GetLastError()) of the most recent failed operation.
     [[nodiscard]] DWORD lastError() const noexcept { return lastError_; }
 
 private:
@@ -252,10 +199,6 @@ private:
     std::wstring processName_;
     mutable DWORD lastError_ = 0;
 };
-
-// ------------------------------------------------------------------
-// Out-of-line definitions that need Memory to be a complete type
-// ------------------------------------------------------------------
 
 inline Memory& Memory::operator=(Memory&& other) noexcept {
     if (this != &other) {
@@ -310,7 +253,7 @@ inline MemoryProtectionGuard::~MemoryProtectionGuard() {
 inline MemoryProtectionGuard& MemoryProtectionGuard::operator=(MemoryProtectionGuard&& other) noexcept {
     if (this != &other) {
         restore();
-        memory_ = other.memory_;
+        memory = other.memory_;
         address_ = other.address_;
         size_ = other.size_;
         oldProtect_ = other.oldProtect_;
