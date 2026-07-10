@@ -1,4 +1,4 @@
-#include "Memory.hpp"
+#include "mem.hpp"
 
 namespace mem {
 namespace {
@@ -8,9 +8,54 @@ bool iequals(std::wstring_view a, std::wstring_view b) noexcept {
     return _wcsnicmp(a.data(), b.data(), a.size()) == 0;
 }
 
-} 
+std::vector<std::optional<uint8_t>> parsePattern(std::string_view pattern) noexcept {
+    std::vector<std::optional<uint8_t>> tokens;
+    size_t i = 0;
+    while (i < pattern.size()) {
+        while (i < pattern.size() && pattern[i] == ' ') ++i;
+        if (i >= pattern.size()) break;
+        size_t start = i;
+        while (i < pattern.size() && pattern[i] != ' ') ++i;
+        std::string_view token = pattern.substr(start, i - start);
 
-bool Memory::attach(std::wstring_view processName, DWORD access) noexcept {
+        if (token.empty()) continue;
+        if (token.find_first_not_of('?') == std::string_view::npos) {
+            tokens.push_back(std::nullopt);
+            continue;
+        }
+
+        unsigned long value = 0;
+        for (char c : token) {
+            unsigned digit;
+            if (c >= '0' && c <= '9') digit = c - '0';
+            else if (c >= 'a' && c <= 'f') digit = 10 + (c - 'a');
+            else if (c >= 'A' && c <= 'F') digit = 10 + (c - 'A');
+            else return {};
+            value = value * 16 + digit;
+        }
+        tokens.push_back(static_cast<uint8_t>(value));
+    }
+    return tokens;
+}
+
+std::optional<size_t> findPattern(std::span<const uint8_t> data, const std::vector<std::optional<uint8_t>>& tokens) noexcept {
+    if (tokens.empty() || data.size() < tokens.size()) return std::nullopt;
+    for (size_t i = 0; i + tokens.size() <= data.size(); ++i) {
+        bool matches = true;
+        for (size_t j = 0; j < tokens.size(); ++j) {
+            if (tokens[j] && data[i + j] != *tokens[j]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return i;
+    }
+    return std::nullopt;
+}
+
+}
+
+bool Process::attach(std::wstring_view processName, DWORD access) noexcept {
     detach();
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -41,7 +86,7 @@ bool Memory::attach(std::wstring_view processName, DWORD access) noexcept {
     return attach(foundPid, access);
 }
 
-bool Memory::attach(DWORD processId, DWORD access) noexcept {
+bool Process::attach(DWORD processId, DWORD access) noexcept {
     detach();
 
     HANDLE opened = OpenProcess(access, FALSE, processId);
@@ -72,7 +117,7 @@ bool Memory::attach(DWORD processId, DWORD access) noexcept {
     return true;
 }
 
-bool Memory::attach(HANDLE existingHandle) noexcept {
+bool Process::attach(HANDLE existingHandle) noexcept {
     detach();
 
     if (!existingHandle || existingHandle == INVALID_HANDLE_VALUE) {
@@ -80,13 +125,13 @@ bool Memory::attach(HANDLE existingHandle) noexcept {
         return false;
     }
 
-    handle_ = existingHandle; 
+    handle_ = existingHandle;
     pid_ = GetProcessId(existingHandle);
     processName_.clear();
     return true;
 }
 
-void Memory::detach() noexcept {
+void Process::detach() noexcept {
     if (handle_) {
         CloseHandle(handle_);
         handle_ = nullptr;
@@ -95,42 +140,39 @@ void Memory::detach() noexcept {
     processName_.clear();
 }
 
-std::optional<Module> Memory::getModule(std::wstring_view moduleName) const noexcept {
+Module Process::module(std::wstring_view moduleName) const noexcept {
     if (!pid_) {
         lastError_ = ERROR_INVALID_HANDLE;
-        return std::nullopt;
+        return {};
     }
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid_);
     if (snapshot == INVALID_HANDLE_VALUE) {
         lastError_ = GetLastError();
-        return std::nullopt;
+        return {};
     }
 
     MODULEENTRY32W entry{};
     entry.dwSize = sizeof(entry);
 
-    std::optional<Module> result;
+    Module result;
+    bool found = false;
     if (Module32FirstW(snapshot, &entry)) {
         do {
             if (iequals(moduleName, entry.szModule)) {
-                result.emplace(entry);
+                result = Module(entry);
+                found = true;
                 break;
             }
         } while (Module32NextW(snapshot, &entry));
     }
     CloseHandle(snapshot);
 
-    if (!result) lastError_ = ERROR_NOT_FOUND;
+    if (!found) lastError_ = ERROR_NOT_FOUND;
     return result;
 }
 
-Module Memory::module(std::wstring_view moduleName) const noexcept {
-    auto found = getModule(moduleName);
-    return found ? *found : Module{};
-}
-
-std::vector<Module> Memory::modules() const noexcept {
+std::vector<Module> Process::modules() const noexcept {
     std::vector<Module> result;
     if (!pid_) {
         lastError_ = ERROR_INVALID_HANDLE;
@@ -154,7 +196,7 @@ std::vector<Module> Memory::modules() const noexcept {
     return result;
 }
 
-std::vector<ProcessEntry> Memory::processes() noexcept {
+std::vector<ProcessEntry> Process::processes() noexcept {
     std::vector<ProcessEntry> result;
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -171,7 +213,7 @@ std::vector<ProcessEntry> Memory::processes() noexcept {
     return result;
 }
 
-bool Memory::readRaw(uintptr_t address, void* buffer, size_t size) const noexcept {
+bool Process::readRaw(uintptr_t address, void* buffer, size_t size) const noexcept {
     if (!handle_ || !address || !buffer) {
         lastError_ = ERROR_INVALID_HANDLE;
         return false;
@@ -186,7 +228,7 @@ bool Memory::readRaw(uintptr_t address, void* buffer, size_t size) const noexcep
     return true;
 }
 
-bool Memory::writeRaw(uintptr_t address, const void* buffer, size_t size) const noexcept {
+bool Process::writeRaw(uintptr_t address, const void* buffer, size_t size) const noexcept {
     if (!handle_ || !address || !buffer) {
         lastError_ = ERROR_INVALID_HANDLE;
         return false;
@@ -201,19 +243,17 @@ bool Memory::writeRaw(uintptr_t address, const void* buffer, size_t size) const 
     return true;
 }
 
-std::vector<uint8_t> Memory::readBytes(uintptr_t address, size_t size) const noexcept {
+std::vector<uint8_t> Process::readBytes(uintptr_t address, size_t size) const noexcept {
     std::vector<uint8_t> buffer(size);
-    if (!readRaw(address, buffer.data(), size)) {
-        buffer.clear();
-    }
+    if (!readRaw(address, buffer.data(), size)) buffer.clear();
     return buffer;
 }
 
-bool Memory::writeBytes(uintptr_t address, std::span<const uint8_t> bytes) const noexcept {
+bool Process::writeBytes(uintptr_t address, std::span<const uint8_t> bytes) const noexcept {
     return writeRaw(address, bytes.data(), bytes.size());
 }
 
-std::optional<std::string> Memory::readString(uintptr_t address, size_t maxLength) const noexcept {
+std::optional<std::string> Process::readString(uintptr_t address, size_t maxLength) const noexcept {
     if (!handle_ || !address || maxLength == 0) {
         lastError_ = ERROR_INVALID_HANDLE;
         return std::nullopt;
@@ -232,7 +272,7 @@ std::optional<std::string> Memory::readString(uintptr_t address, size_t maxLengt
     return buffer;
 }
 
-std::optional<std::wstring> Memory::readStringW(uintptr_t address, size_t maxLength) const noexcept {
+std::optional<std::wstring> Process::readWString(uintptr_t address, size_t maxLength) const noexcept {
     if (!handle_ || !address || maxLength == 0) {
         lastError_ = ERROR_INVALID_HANDLE;
         return std::nullopt;
@@ -252,13 +292,52 @@ std::optional<std::wstring> Memory::readStringW(uintptr_t address, size_t maxLen
     return buffer;
 }
 
-bool Memory::writeString(uintptr_t address, std::string_view text) const noexcept {
+bool Process::writeString(uintptr_t address, std::string_view text) const noexcept {
     std::vector<char> buffer(text.begin(), text.end());
     buffer.push_back('\0');
     return writeRaw(address, buffer.data(), buffer.size());
 }
 
-bool Memory::protect(uintptr_t address, size_t size, DWORD newProtect, DWORD* oldProtect) noexcept {
+std::optional<uintptr_t> Process::scan(uintptr_t start, size_t size, std::string_view pattern) const noexcept {
+    if (!handle_ || !start || size == 0) return std::nullopt;
+
+    auto tokens = parsePattern(pattern);
+    if (tokens.empty()) return std::nullopt;
+
+    uintptr_t cursor = start;
+    const uintptr_t end = start + size;
+
+    while (cursor < end) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQueryEx(handle_, reinterpret_cast<LPCVOID>(cursor), &info, sizeof(info)) != sizeof(info)) {
+            break;
+        }
+
+        const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+        const uintptr_t scanEnd = regionEnd < end ? regionEnd : end;
+        const bool committed = info.State == MEM_COMMIT;
+        const bool blocked = (info.Protect & PAGE_NOACCESS) != 0 || (info.Protect & PAGE_GUARD) != 0;
+
+        if (committed && !blocked && scanEnd > cursor) {
+            auto region = readBytes(cursor, scanEnd - cursor);
+            if (auto offset = findPattern(region, tokens)) {
+                return cursor + *offset;
+            }
+        }
+
+        cursor = regionEnd > cursor ? regionEnd : end;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<uintptr_t> Process::scan(std::wstring_view moduleName, std::string_view pattern) const noexcept {
+    Module target = module(moduleName);
+    if (!target) return std::nullopt;
+    return scan(target.base(), target.size(), pattern);
+}
+
+bool Process::protect(uintptr_t address, size_t size, DWORD newProtect, DWORD* oldProtect) noexcept {
     if (!handle_) {
         lastError_ = ERROR_INVALID_HANDLE;
         return false;
@@ -274,7 +353,7 @@ bool Memory::protect(uintptr_t address, size_t size, DWORD newProtect, DWORD* ol
     return true;
 }
 
-uintptr_t Memory::allocate(size_t size, DWORD protectFlags) noexcept {
+uintptr_t Process::allocate(size_t size, DWORD protectFlags) noexcept {
     if (!handle_) {
         lastError_ = ERROR_INVALID_HANDLE;
         return 0;
@@ -285,7 +364,7 @@ uintptr_t Memory::allocate(size_t size, DWORD protectFlags) noexcept {
     return reinterpret_cast<uintptr_t>(address);
 }
 
-bool Memory::free(uintptr_t address) noexcept {
+bool Process::free(uintptr_t address) noexcept {
     if (!handle_) {
         lastError_ = ERROR_INVALID_HANDLE;
         return false;
@@ -296,4 +375,4 @@ bool Memory::free(uintptr_t address) noexcept {
     return ok != 0;
 }
 
-} // namespace mem
+}

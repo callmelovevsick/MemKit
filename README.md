@@ -1,393 +1,488 @@
-# MemKit
+# mem
 
-Thanks @cheat_and_math for the upgrade im building upon ur library
-(`I made it easier to manipulate with commands.`)
+A small C++20 library for reading and writing the memory of another Windows
+process. Two files, no dependencies beyond the Windows SDK: `mem.hpp` and
+`mem.cpp`. Drop them into a Visual Studio project and you're done.
 
-A small, modern C++ (C++20) wrapper around the Win32 process-memory APIs
-(`ReadProcessMemory`, `WriteProcessMemory`, `VirtualAllocEx`, `Toolhelp32`, ...).
-
-It replaces long, C-style calls like
-
-```cpp
-uintptr_t addr = mem.pointer_resolve(base, offsets, 3);
-```
-
-with a short, chainable, autocomplete-friendly API:
+It wraps `ReadProcessMemory`, `WriteProcessMemory`, `VirtualAllocEx`,
+`VirtualProtectEx` and the Toolhelp32 snapshot APIs behind an interface built
+around one class, `mem::Process`, plus two small helpers, `mem::Pointer` and
+`mem::Module`.
 
 ```cpp
-int hp = memory.pointer(base).offset(0x10).offset(0x20).offset(0x8).read<int>();
+#include "mem.hpp"
+using namespace mem;
+
+Process game;
+game.attach(L"PlantsVsZombies.exe");
+
+int sun = game.read<int>(0x1B0F6740);
+game.write(0x1B0F6740, 9999);
 ```
 
-> **Scope & responsible use.** This library reads and writes the memory of another
-> process. Only point it at processes you own or are otherwise authorized to
-> inspect or modify — for example your own applications, single-player/offline
-> games you own, or software you are debugging/reverse-engineering under a
-> license or agreement that permits it. Attaching to arbitrary third-party or
-> multiplayer processes may violate that software's terms of service or
-> applicable law; that is on the person using the library, not the library
-> itself.
+Only point this at processes you own or are otherwise authorized to inspect
+or modify: your own software, offline/single-player games you own, or
+anything you're debugging under a license or agreement that allows it.
+Attaching to third-party or multiplayer processes you don't control may
+violate that software's terms of service, and that responsibility sits with
+whoever uses the library, not with the library itself.
 
----
+## Requirements
 
-## Features
+- Windows
+- C++20 (the library uses `std::span`)
+- MSVC 2019 16.10 or newer, or MinGW-w64 GCC 10 or newer
+- Links against `kernel32`, which any normal Win32 project already links
 
-- **Chainable pointer resolution** — `mem.pointer(base).offset(0x10)...read<T>()`
-- **Typed read/write** — `read<T>()`, `tryRead<T>()` (returns `std::optional`), `write()`
-- **Strings & raw bytes** — `readString`, `readStringW`, `writeString`, `readBytes`, `writeBytes`
-- **Module lookup** — `module()`, `getModule()`, `modules()`
-- **Process enumeration** — `Memory::processes()` (static, no attach required)
-- **RAII everywhere** — the process handle closes itself; `MemoryProtectionGuard`
-  restores the original page protection automatically
-- **`Protection` enum class** as a typed alternative to raw `PAGE_*` flags
-- **Move-only, non-copyable `Memory`** — no accidental double-`CloseHandle`
-- **All Win32 calls check their return value** and record the last error via `lastError()`
-- Header + source split (`Memory.hpp` / `Memory.cpp`), single namespace: `mem`
-
----
-
-## What changed vs. the original API
-
-| Before | Problem | After |
-|---|---|---|
-| `attach(name, access)` only | No way to attach by PID or existing handle | `attach(name)`, `attach(pid)`, `attach(handle)` overloads |
-| `read_memory<T>()` / `write_memory<T>()` | Long names, no failure signal | `read<T>()`, `tryRead<T>()` (`std::optional`), `write<T>()` |
-| `get_module_infor()` (typo), returns `{}` on failure | Hard to check for failure, name has a typo | `getModule()` → `std::optional<Module>`, plus a convenience `module()` |
-| `pointer_resolve(base, offset[], size)` | C-array + size, not chainable | `pointer(base).offset(a).offset(b)....read<T>()` |
-| `change_memory_proctection()` (typo) | Never restores the old protection → permanently weakens memory protection | `protect()` restores on request, and `scopedProtect()` restores **automatically** via RAII |
-| `free_mem()` | Awkward name to avoid clashing with `::free` | `free()` — no clash, since it's a class member |
-| No error reporting anywhere | Silent failures (`ReadProcessMemory` return value ignored, etc.) | Every call checks its return value and updates `lastError()` |
-| `CreateToolhelp32Snapshot` / `Process32FirstW` return values never checked | Could dereference an uninitialized buffer if the snapshot is empty/fails | All snapshot calls now check `INVALID_HANDLE_VALUE` and the first enumeration call |
-| Handles never closed on early return paths | Handle leaks | RAII (`~Memory`, `MemoryProtectionGuard`) + consistent cleanup |
-| Raw `DWORD` protection flags only | Easy to typo a `PAGE_*` constant | `enum class Protection` overloads alongside the raw `DWORD` ones (both work) |
-
----
+Build your project for the same architecture as the process you're
+attaching to. A 64-bit build cannot correctly read pointers out of a 32-bit
+process, and the reverse doesn't work either. `uintptr_t` is sized to match
+your own build, not the target's.
 
 ## Installation
 
-MemKit is two files — drop them into your project:
-
-```
-include/Memory.hpp
-src/Memory.cpp
-```
-
-Requirements:
-- Windows, C++20 (uses `std::span`)
-- MSVC 2019 16.10+, or MinGW-w64 GCC 10+
-- Links against `kernel32` only (already linked by default in a normal Win32 project)
-
-CMake example:
-
-```cmake
-add_library(memkit STATIC src/Memory.cpp)
-target_include_directories(memkit PUBLIC include)
-target_compile_features(memkit PUBLIC cxx_std_20)
-target_link_libraries(your_target PRIVATE memkit)
-```
-
----
+Copy `mem.hpp` and `mem.cpp` into your project and add `mem.cpp` to your
+build. That's the entire installation step. There's no CMake file, no
+package manager entry, no `include/` folder to configure.
 
 ## Quick Start
 
 ```cpp
-#include "Memory.hpp"
+#include "mem.hpp"
+using namespace mem;
 
 int main() {
-    mem::Memory memory;
-
-    if (!memory.attach(L"game.exe")) {
-        return 1; // process not found, or OpenProcess failed — check memory.lastError()
+    Process game;
+    if (!game.attach(L"PlantsVsZombies.exe")) {
+        return 1;
     }
 
-    uintptr_t base = memory.module(L"client.dll").base();
+    int sun = game.read<int>(0x1B0F6740);
+    game.write(0x1B0F6740, 9999);
 
-    int hp = memory.pointer(base)
-                   .offset(0x10)
-                   .offset(0x20)
-                   .offset(0x8)
-                   .read<int>();
-
-    memory.write(base + 0x100, 999);
+    game.detach();
 }
 ```
 
----
+## Namespace
+
+Everything lives in `mem`. `using namespace mem;` is fine in a `.cpp` file
+that only deals with process memory; in a header, prefer qualifying names
+(`mem::Process`) to avoid dragging the whole namespace into whatever
+includes it.
+
+## Basic Usage
+
+The object you interact with is `Process`. It represents an attached
+target and exposes every operation the library provides: attaching,
+reading, writing, resolving pointers, scanning for byte patterns,
+allocating memory, and changing page protection.
+
+```cpp
+Process game;
+game.attach(L"game.exe");
+
+int health = game.read<int>(addr);
+float speed = game.read<float>(addr + 0x4);
+```
 
 ## Attach Process
 
 ```cpp
-mem::Memory memory;
+Process game;
 
-memory.attach(L"game.exe");                       // by process name
-memory.attach(L"game.exe", PROCESS_VM_READ);       // by name, with a custom access mask
-memory.attach(1234u);                              // by PID
-memory.attach(someExistingHandle);                 // by an already-open HANDLE (Memory takes ownership)
-
-memory.isAttached();   // bool
-memory.pid();          // DWORD
-memory.handle();       // HANDLE
-memory.processName();  // std::wstring
-
-memory.detach();       // closes the handle; also happens automatically in ~Memory()
+game.attach(L"game.exe");
+game.attach(L"game.exe", PROCESS_VM_READ);
+game.attach(1234u);
+game.attach(someExistingHandle);
 ```
 
-`PROCESS_ALL_ACCESS` is the default access mask (same default as the original
-library). For production code, prefer requesting only what you need, e.g.
-`PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION`.
+`attach` has three overloads:
 
----
+- `attach(std::wstring_view name, DWORD access = PROCESS_ALL_ACCESS)` looks
+  through the running processes for an exact (case-insensitive) match on the
+  executable name and opens it.
+- `attach(DWORD pid, DWORD access = PROCESS_ALL_ACCESS)` opens a process
+  directly by process ID, skipping the name lookup.
+- `attach(HANDLE handle)` adopts a handle you already opened yourself.
+  `Process` takes ownership of it and will close it on `detach()` or when
+  the `Process` object is destroyed.
+
+All three return `bool`. `false` means the process wasn't found or
+`OpenProcess` failed (insufficient privileges is the usual cause); check
+`lastError()` for the Win32 error code.
+
+`detach()` closes the handle and resets the object to an unattached state.
+It's safe to call more than once and runs automatically in the destructor,
+so a `Process` going out of scope always cleans up after itself. `isAttached()`
+tells you whether a handle is currently held. `pid()`, `handle()`, and
+`processName()` return the attached process's ID, raw handle, and resolved
+executable name.
 
 ## Read Memory
 
 ```cpp
-int hp        = memory.read<int>(addr);         // returns T{} on failure
-float speed   = memory.read<float>(addr);
-Vec3 position = memory.read<Vec3>(addr);         // any trivially copyable type
+int ammo = game.read<int>(addr);
+float hp = game.read<float>(addr);
 
-std::optional<int> maybeHp = memory.tryRead<int>(addr); // std::nullopt on failure
+struct Vec3 { float x, y, z; };
+Vec3 position = game.read<Vec3>(addr);
 
-std::vector<uint8_t> bytes = memory.readBytes(addr, 64);
+std::optional<int> maybeAmmo = game.tryRead<int>(addr);
 
-std::optional<std::string>  name  = memory.readString(addr, 64);   // ANSI, null-terminated
-std::optional<std::wstring> wname = memory.readStringW(addr, 64);  // UTF-16, null-terminated
+std::vector<int> waveIds = game.readArray<int>(addr, 20);
+
+std::vector<uint8_t> raw = game.readBytes(addr, 64);
+
+std::optional<std::string> name = game.readString(addr, 32);
+std::optional<std::wstring> wname = game.readWString(addr, 32);
 ```
+
+`read<T>(address)` copies `sizeof(T)` bytes from the target process and
+returns them as a `T`. `T` must be trivially copyable, since the underlying
+call is a raw memory copy; the compiler enforces this with a `static_assert`.
+On failure it returns a default-constructed `T{}`, which is convenient but
+indistinguishable from a real zero value. When that distinction matters, use
+`tryRead<T>(address)` instead, which returns `std::optional<T>` and comes
+back empty on failure.
+
+`readArray<T>(address, count)` reads `count` contiguous elements of `T` and
+returns them as a `std::vector<T>`. On failure the vector is empty, so check
+`.empty()` before indexing.
+
+`readBytes(address, size)` reads a raw block of memory into a
+`std::vector<uint8_t>`, useful for structures you don't want to model with a
+C++ type, or as input to `scan()`.
+
+`readString`/`readWString` read a null-terminated ANSI or UTF-16 string, up
+to `maxLength` characters, and return `std::nullopt` if the read fails.
+They stop at the first null terminator they find inside that window; if the
+string is longer than `maxLength`, it's truncated.
 
 ## Write Memory
 
 ```cpp
-memory.write(addr, 999);
-memory.write(addr, 3.14f);
-memory.write(addr, Vec3{1.0f, 2.0f, 3.0f});   // returns bool
+game.write(addr, 9999);
+game.write(addr, 3.14f);
+game.write(addr, Vec3{1.0f, 2.0f, 3.0f});
 
-memory.writeBytes(addr, bytes);               // std::span<const uint8_t>
-memory.writeString(addr, "hello");            // writes the bytes + a null terminator
+game.writeArray<int>(addr, waveIds);
+game.writeBytes(addr, raw);
+game.writeString(addr, "hello");
 ```
 
-`read<T>` / `write<T>` are restricted to trivially copyable types at compile
-time (`static_assert`), matching how `ReadProcessMemory`/`WriteProcessMemory`
-actually behave — they copy raw bytes.
-
----
+`write<T>(address, value)` and `writeArray<T>(address, span)` mirror their
+read counterparts and return `bool`. `writeString` writes the bytes of the
+string plus a trailing null terminator, so make sure the destination buffer
+in the target process is big enough to hold it.
 
 ## Pointer Chain
 
-`pointer(base)` mirrors the original `pointer_resolve()` exactly: each
-`.offset(x)` call **dereferences the current address, then adds `x`**. That
-means `base` itself must point to a pointer (e.g. `module_base + static_offset`),
-same as before.
+Games and most non-trivial applications store data behind multiple levels
+of indirection: a static module offset that holds a pointer, which holds
+another pointer, and so on, until the last hop lands on the actual value.
+`pointer()` walks that chain for you.
 
 ```cpp
-// Old:
-uintptr_t offsets[] = { 0x10, 0x20, 0x8 };
-uintptr_t addr = mem.pointer_resolve(base, offsets, 3);
-int hp = mem.read_memory<int>(addr);
+uintptr_t base = game.module(L"client.dll").base();
 
-// New:
-int hp = memory.pointer(base)
-               .offset(0x10)
-               .offset(0x20)
-               .offset(0x8)
-               .read<int>();
-
-// Or, if you need the raw address instead of a value:
-uintptr_t addr = memory.pointer(base).offset(0x10).offset(0x20).offset(0x8).address();
-
-// If any dereference along the chain hits 0, the chain becomes invalid
-// and short-circuits (matching the old "return 0" behavior):
-auto p = memory.pointer(base).offset(0x10).offset(0x20);
-if (!p) {
-    // one of the intermediate pointers was null
-}
+int hp = game.pointer(base)
+             .offset(0x10)
+             .offset(0x20)
+             .offset(0x8)
+             .read<int>();
 ```
 
----
+Each `.offset(x)` call dereferences the *current* address (reads the
+pointer stored there) and adds `x` to the result. That means the value you
+start the chain with has to itself be a location that holds a pointer,
+typically a module base plus a static offset, not a final data address. If
+any dereference along the way returns 0 (a null pointer, or a failed read),
+the chain becomes invalid and every following call becomes a cheap no-op
+that returns `T{}` or `std::nullopt` rather than crashing.
+
+`.address()` gives you the raw resolved address if you need it for
+something other than a typed read. `.valid()` / `explicit operator bool()`
+tell you whether the chain resolved successfully. `.write<T>(value)` writes
+through the resolved pointer, the same way `.read<T>()` reads through it.
 
 ## Module
 
 ```cpp
-mem::Module client = memory.module(L"client.dll");  // never throws; check .valid()
+Module client = game.module(L"client.dll");
 if (client) {
     uintptr_t base = client.base();
-    size_t     size = client.size();
+    size_t size = client.size();
     std::wstring name = client.name();
     std::wstring path = client.path();
 }
 
-// Or, if you want an explicit "found / not found" signal:
-if (auto found = memory.getModule(L"client.dll")) {
-    uintptr_t base = found->base();
+std::vector<Module> all = game.modules();
+```
+
+`module(name)` looks up a loaded module by name (case-insensitive) and
+returns a `Module`. If the module isn't found, you get back a default,
+invalid `Module`, not an exception or a null pointer, check `.valid()` or
+just use the object in a boolean context (`if (client)`) before trusting
+`base()`. `modules()` returns every module currently loaded in the attached
+process.
+
+## Pattern Scan
+
+Hardcoded addresses break the moment the target application updates.
+Pattern scanning finds a byte sequence, including wildcard bytes, inside
+the process's memory, so you can locate code or data by its signature
+instead of a fixed address.
+
+```cpp
+auto addr = game.scan(L"client.dll", "48 8B 05 ?? ?? ?? ?? 48 85 C0");
+if (addr) {
+    uintptr_t functionStart = *addr;
 }
 
-std::vector<mem::Module> allModules = memory.modules();
+auto addr2 = game.scan(base, moduleSize, "8B 44 24 08 ?? 90");
 ```
 
----
+The pattern format is space-separated hex bytes, with `?` or `??` standing
+in for a byte that can be anything (the same format Cheat Engine and most
+disassemblers use for AOB/IDA-style signatures). `scan(moduleName, pattern)`
+searches an entire module; `scan(start, size, pattern)` searches an
+arbitrary address range, which is what the module overload calls
+internally after resolving the module's base and size. Both return
+`std::optional<uintptr_t>`, empty if nothing matched.
 
-## Allocate Memory
+Internally, the scan walks the target's memory region by region using
+`VirtualQueryEx`, skipping anything that isn't committed or is marked
+`PAGE_NOACCESS`/`PAGE_GUARD`, so it won't fail outright just because part of
+a module's address range happens to be unmapped.
+
+## Allocation
 
 ```cpp
-uintptr_t buffer = memory.allocate(256);                                  // PAGE_EXECUTE_READWRITE (default, matches old behavior)
-uintptr_t buffer2 = memory.allocate(256, mem::Protection::ReadWrite);     // typed overload
-uintptr_t buffer3 = memory.allocate(256, PAGE_READWRITE);                 // raw DWORD overload
+uintptr_t buffer = game.allocate(256);
+uintptr_t buffer2 = game.allocate(256, Protection::ReadWrite);
+uintptr_t buffer3 = game.allocate(256, PAGE_READWRITE);
+
+game.free(buffer);
 ```
 
-## Free Memory
+`allocate(size, protect)` wraps `VirtualAllocEx` with `MEM_COMMIT |
+MEM_RESERVE` and returns the address of the new region, or 0 on failure.
+The default protection is `PAGE_EXECUTE_READWRITE`, matching the original
+library's behavior; pass a narrower value if you don't need executable
+memory. `free(address)` releases memory previously returned by `allocate()`.
+
+## Protection
 
 ```cpp
-memory.free(buffer);
-```
-
-## Change Protection
-
-```cpp
-// One-shot, you restore it yourself:
 DWORD oldProtect = 0;
-memory.protect(addr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect);
-// ... do the write ...
-memory.protect(addr, sizeof(int), oldProtect); // restore manually
-
-// RAII version — restores automatically, even if an exception/early return happens:
-{
-    auto guard = memory.scopedProtect(addr, sizeof(int), PAGE_EXECUTE_READWRITE);
-    memory.write(addr, 999);
-} // original protection restored here
-
-// Or keep the new protection permanently:
-auto guard = memory.scopedProtect(addr, sizeof(int), PAGE_EXECUTE_READWRITE);
-guard.dismiss(); // destructor will no longer restore it
+game.protect(addr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect);
+game.write(addr, 9999);
+game.restore(addr, sizeof(int), oldProtect);
 ```
 
----
+`protect(address, size, newProtect, oldProtect = nullptr)` wraps
+`VirtualProtectEx`. If `oldProtect` is non-null, the previous protection
+value is written there so you can put it back later. `restore(address,
+size, oldProtect)` is that "put it back" call, it's `protect()` under a
+name that makes the intent at the call site obvious. There's a `Protection`
+overload of `protect()` too, if you'd rather write `Protection::ReadWrite`
+than remember the matching `PAGE_*` constant.
+
+The library does not restore protection automatically. If you change it,
+pair the call with `restore()` yourself, ideally right after the write you
+needed the new protection for.
 
 ## API Reference
 
-### `mem::Memory`
+### `mem::Process`
 
-| Method | Description |
-|---|---|
-| `attach(std::wstring_view name, DWORD access = PROCESS_ALL_ACCESS)` | Finds a running process by executable name and opens it. |
-| `attach(DWORD pid, DWORD access = PROCESS_ALL_ACCESS)` | Opens a process directly by PID. |
-| `attach(HANDLE handle)` | Adopts an already-open handle; `Memory` takes ownership. |
-| `detach()` | Closes the handle and resets state. Safe to call multiple times. |
-| `isAttached()` | Whether a process handle is currently held. |
-| `pid()`, `handle()`, `processName()` | Basic identity accessors. |
-| `getModule(name)` | Returns `std::optional<Module>`. |
-| `module(name)` | Convenience version: returns a default (`.valid() == false`) `Module` instead of `std::nullopt`. |
-| `modules()` | All modules loaded in the attached process. |
-| `static processes()` | Lists all running processes (pid + name); does not require `attach()`. |
-| `read<T>(addr)` | Reads a trivially copyable `T`. Returns `T{}` on failure. |
-| `tryRead<T>(addr)` | Same, but returns `std::optional<T>` so you can detect failure. |
-| `write<T>(addr, value)` | Writes a trivially copyable `T`. Returns `bool`. |
-| `readBytes(addr, size)` / `writeBytes(addr, span)` | Raw byte access. |
-| `readString` / `readStringW` / `writeString` | Null-terminated ANSI/UTF-16 string helpers. |
-| `dereference(addr)` | Reads a `uintptr_t` at `addr` (used internally by `Pointer`). |
-| `pointer(base)` | Starts a chainable `Pointer` at `base`. |
-| `protect(addr, size, newProtect, old = nullptr)` | Wraps `VirtualProtectEx`; accepts raw `DWORD` or `Protection`. |
-| `scopedProtect(addr, size, newProtect)` | Same, but returns a `MemoryProtectionGuard` that restores on scope exit. |
-| `allocate(size, protect = PAGE_EXECUTE_READWRITE)` | Wraps `VirtualAllocEx`; accepts raw `DWORD` or `Protection`. |
-| `free(addr)` | Wraps `VirtualFreeEx`. |
-| `lastError()` | Win32 error code (`GetLastError()`) of the last failed call. |
+| Function | Parameters | Returns | Notes |
+|---|---|---|---|
+| `attach(name, access = PROCESS_ALL_ACCESS)` | `name`: executable file name to search for. `access`: desired `OpenProcess` access mask. | `bool` | Finds the process by name and opens it. |
+| `attach(pid, access = PROCESS_ALL_ACCESS)` | `pid`: process ID. `access`: access mask. | `bool` | Opens a process directly, no name lookup. |
+| `attach(handle)` | `handle`: an already-open `HANDLE`. | `bool` | Adopts the handle; `Process` now owns it. |
+| `detach()` | none | `void` | Closes the handle. Safe to call repeatedly. |
+| `isAttached()` | none | `bool` | Whether a handle is currently held. |
+| `pid()` | none | `DWORD` | Attached process ID, 0 if not attached. |
+| `handle()` | none | `HANDLE` | The raw handle, for calling Win32 APIs the library doesn't wrap. |
+| `processName()` | none | `const std::wstring&` | Executable name resolved at attach time. |
+| `module(name)` | `name`: module file name. | `Module` | Invalid (`.valid() == false`) if not found. |
+| `modules()` | none | `std::vector<Module>` | All modules loaded in the process. |
+| `static processes()` | none | `std::vector<ProcessEntry>` | Every running process; doesn't require `attach()`. |
+| `read<T>(address)` | `address`: source address. | `T` | `T{}` on failure. `T` must be trivially copyable. |
+| `tryRead<T>(address)` | `address`: source address. | `std::optional<T>` | `std::nullopt` on failure. |
+| `write<T>(address, value)` | `address`: destination. `value`: data to write. | `bool` | |
+| `readArray<T>(address, count)` | `address`: source. `count`: element count. | `std::vector<T>` | Empty vector on failure. |
+| `writeArray<T>(address, values)` | `address`: destination. `values`: a `std::span<const T>`. | `bool` | |
+| `readBytes(address, size)` | `address`, `size` in bytes. | `std::vector<uint8_t>` | Empty on failure. |
+| `writeBytes(address, bytes)` | `address`. `bytes`: `std::span<const uint8_t>`. | `bool` | |
+| `readString(address, maxLength = 256)` | `address`. `maxLength`: character cap. | `std::optional<std::string>` | ANSI, stops at the first null byte. |
+| `readWString(address, maxLength = 256)` | same | `std::optional<std::wstring>` | UTF-16 version. |
+| `writeString(address, text)` | `address`. `text`: `std::string_view`. | `bool` | Writes the bytes plus a null terminator. |
+| `dereference(address)` | `address` | `uintptr_t` | Reads a `uintptr_t` at `address`; what `Pointer::offset` uses internally. |
+| `pointer(base)` | `base`: starting address. | `Pointer` | Begins a chain; see Pointer Chain above. |
+| `scan(moduleName, pattern)` | `moduleName`. `pattern`: AOB string. | `std::optional<uintptr_t>` | Searches one module. |
+| `scan(start, size, pattern)` | `start`, `size`, `pattern`. | `std::optional<uintptr_t>` | Searches an arbitrary range. |
+| `protect(address, size, newProtect, oldProtect = nullptr)` | `newProtect`: raw `DWORD` or `Protection`. `oldProtect`: optional out-param. | `bool` | Wraps `VirtualProtectEx`. |
+| `restore(address, size, oldProtect)` | `oldProtect`: value captured from `protect()`. | `bool` | Puts the previous protection back. |
+| `allocate(size, protect = PAGE_EXECUTE_READWRITE)` | `size` in bytes. `protect`: raw `DWORD` or `Protection`. | `uintptr_t` | 0 on failure. |
+| `free(address)` | `address` from `allocate()`. | `bool` | Wraps `VirtualFreeEx`. |
+| `lastError()` | none | `DWORD` | `GetLastError()` value from the most recent failed call. |
 
 ### `mem::Pointer`
 
-| Method | Description |
-|---|---|
-| `offset(off)` | Dereferences the current address, adds `off`, returns `*this`. |
-| `address()` | The current resolved address. |
-| `valid()` / `operator bool()` | `false` if any dereference in the chain hit 0. |
-| `read<T>()` / `tryRead<T>()` / `write<T>(value)` | Same semantics as on `Memory`, applied at `address()`. |
+Returned by `Process::pointer(base)`. Not constructed directly.
+
+| Function | Returns | Notes |
+|---|---|---|
+| `offset(value)` | `Pointer&` | Dereferences the current address, adds `value`. Chainable. |
+| `address()` | `uintptr_t` | The address resolved so far. |
+| `valid()` / `operator bool()` | `bool` | `false` once any dereference in the chain hits 0. |
+| `read<T>()` | `T` | Reads at the resolved address; `T{}` if the chain is invalid. |
+| `tryRead<T>()` | `std::optional<T>` | Same, with failure signaled through `std::nullopt`. |
+| `write<T>(value)` | `bool` | Writes at the resolved address. |
 
 ### `mem::Module`
 
-`name()`, `path()`, `base()`, `size()`, `valid()` / `operator bool()`.
+| Function | Returns |
+|---|---|
+| `name()` | `const std::wstring&` |
+| `path()` | `const std::wstring&` |
+| `base()` | `uintptr_t` |
+| `size()` | `size_t` |
+| `valid()` / `operator bool()` | `bool` |
 
-### `mem::MemoryProtectionGuard`
+### `mem::Protection`
 
-`restore()` (idempotent), `dismiss()` (keep the new protection permanently), `active()`.
+`enum class Protection : DWORD` with values `NoAccess`, `ReadOnly`,
+`ReadWrite`, `Execute`, `ExecuteRead`, `ExecuteReadWrite`, typed aliases for
+the matching `PAGE_*` constants. `toWin32(Protection)` converts one back to
+a raw `DWORD`, in case you need to pass it to a Win32 call the library
+doesn't wrap.
 
-### `mem::Protection` (enum class)
+### `mem::ProcessEntry`
 
-`NoAccess`, `ReadOnly`, `ReadWrite`, `Execute`, `ExecuteRead`, `ExecuteReadWrite` — thin,
-typed aliases for the corresponding `PAGE_*` constants (`toWin32()` converts back to `DWORD`).
-
----
+A plain struct: `DWORD pid` and `std::wstring name`, one entry per running
+process, returned by `Process::processes()`.
 
 ## Examples
 
-**Read an int**
+**Read an int, a float, and a struct**
 ```cpp
-int ammo = memory.read<int>(addr);
-```
+int ammo = game.read<int>(addr);
+float speed = game.read<float>(addr + 0x4);
 
-**Read a float**
-```cpp
-float speed = memory.read<float>(addr);
-```
-
-**Read a struct**
-```cpp
 struct Vec3 { float x, y, z; };
-Vec3 position = memory.read<Vec3>(addr);
+Vec3 pos = game.read<Vec3>(addr + 0x8);
 ```
 
-**Read a string**
+**Read a string safely**
 ```cpp
-if (auto name = memory.readString(addr, 32)) {
+if (auto name = game.readString(addr, 32)) {
     std::cout << *name << "\n";
+} else {
+    std::cout << "read failed, error " << game.lastError() << "\n";
 }
 ```
 
-**Pointer chain**
+**Resolve a pointer chain and read through it**
 ```cpp
-int hp = memory.pointer(base).offset(0x10).offset(0x20).offset(0x8).read<int>();
+uintptr_t base = game.module(L"client.dll").base();
+int hp = game.pointer(base).offset(0x10).offset(0x20).offset(0x8).read<int>();
 ```
 
-**Module base**
+**Find a function by pattern and call through it**
 ```cpp
-uintptr_t base = memory.module(L"client.dll").base();
-```
-
-**Allocate + write + free**
-```cpp
-uintptr_t buf = memory.allocate(64, mem::Protection::ReadWrite);
-memory.writeBytes(buf, someBytes);
-memory.free(buf);
-```
-
-**Change protection (RAII)**
-```cpp
-{
-    auto guard = memory.scopedProtect(addr, sizeof(int), PAGE_EXECUTE_READWRITE);
-    memory.write(addr, 1234);
+if (auto addr = game.scan(L"client.dll", "55 8B EC 83 EC ?? 53 56 57")) {
+    uintptr_t functionAddress = *addr;
 }
 ```
 
-**Full example**
+**Allocate a buffer, write to it, free it**
 ```cpp
-#include "Memory.hpp"
+uintptr_t buffer = game.allocate(64, Protection::ReadWrite);
+if (buffer) {
+    game.writeBytes(buffer, someBytes);
+    game.free(buffer);
+}
+```
+
+**Change protection, write, restore**
+```cpp
+DWORD oldProtect = 0;
+if (game.protect(addr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    game.write(addr, 1234);
+    game.restore(addr, sizeof(int), oldProtect);
+}
+```
+
+**A complete program**
+```cpp
+#include "mem.hpp"
 #include <iostream>
 
 int main() {
-    mem::Memory memory;
-    if (!memory.attach(L"game.exe")) {
-        std::cerr << "Attach failed, error " << memory.lastError() << "\n";
+    mem::Process game;
+    if (!game.attach(L"PlantsVsZombies.exe")) {
+        std::cerr << "attach failed, error " << game.lastError() << "\n";
         return 1;
     }
 
-    uintptr_t base = memory.module(L"client.dll").base();
-    if (!base) {
-        std::cerr << "Module not found\n";
-        return 1;
-    }
+    int sun = game.read<int>(0x1B0F6740);
+    std::cout << "sun: " << sun << "\n";
+    game.write(0x1B0F6740, 9999);
 
-    int hp = memory.pointer(base)
-                   .offset(0x10)
-                   .offset(0x20)
-                   .offset(0x8)
-                   .read<int>();
-
-    std::cout << "HP: " << hp << "\n";
-
-    memory.detach();
+    game.detach();
 }
 ```
+
+## Best Practices
+
+- Prefer `tryRead<T>` over `read<T>` when a zero value would be a
+  legitimate reading and you need to tell that apart from a failed read.
+- Check `module()`/`Pointer::valid()` before trusting `base()` or a
+  resolved address; both fail quietly by design instead of throwing.
+- Request the narrowest `OpenProcess` access mask that covers what you
+  actually do. `PROCESS_ALL_ACCESS` is the default for compatibility with
+  the original library, but `PROCESS_VM_READ | PROCESS_VM_WRITE |
+  PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION` is usually enough and
+  is more likely to succeed without administrator rights.
+- Always pair `protect()` with `restore()`. The library won't do it for
+  you, and leaving a page more permissive than it needs to be is the kind
+  of thing that's easy to forget and annoying to debug later.
+- Build for the same bitness (x86 or x64) as your target process.
+- Re-run `scan()` after the target updates. That's the point of using a
+  pattern instead of a hardcoded address, but the pattern itself can still
+  go stale if the surrounding code changes shape entirely.
+
+## Common Mistakes
+
+- Treating `read<T>()` returning `0` as proof the read failed. It might
+  have, or the value might just be zero. Use `tryRead<T>()` if it matters.
+- Forgetting that `pointer(base)` expects `base` to point *at* a pointer,
+  not at the final value. If your first offset looks wrong, you're
+  probably one dereference short or one too many.
+- Writing a pattern without spaces (`"488B05????"` instead of
+  `"48 8B 05 ?? ?? ?? ??"`). The parser splits on spaces; a pattern with no
+  spaces is read as a single, invalid token.
+- Calling `write()`/`allocate()` with `PAGE_EXECUTE_READWRITE` out of habit
+  when the memory doesn't need to be executable. It works, but it's a
+  wider permission than most writes need.
+- Mixing up a 32-bit target with a 64-bit build (or the reverse). Pointers
+  will read back truncated or garbage, and it won't necessarily fail
+  loudly.
+
+# Credits
+
+This project was inspired by the educational videos and Windows memory
+programming tutorials from Cheat and Math.
+
+Special thanks to Cheat and Math for sharing valuable knowledge with the
+programming community.
+
+YouTube:
+https://www.youtube.com/@cheat_and_math
+
+This project is an independent redesign and extension built upon the
+concepts learned from those tutorials.

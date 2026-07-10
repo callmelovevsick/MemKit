@@ -14,14 +14,14 @@
 
 namespace mem {
 
-class Memory; 
+class Process;
 
 enum class Protection : DWORD {
-    NoAccess         = PAGE_NOACCESS,
-    ReadOnly         = PAGE_READONLY,
-    ReadWrite        = PAGE_READWRITE,
-    Execute          = PAGE_EXECUTE,
-    ExecuteRead      = PAGE_EXECUTE_READ,
+    NoAccess = PAGE_NOACCESS,
+    ReadOnly = PAGE_READONLY,
+    ReadWrite = PAGE_READWRITE,
+    Execute = PAGE_EXECUTE,
+    ExecuteRead = PAGE_EXECUTE_READ,
     ExecuteReadWrite = PAGE_EXECUTE_READWRITE,
 };
 
@@ -48,7 +48,6 @@ public:
     [[nodiscard]] const std::wstring& path() const noexcept { return path_; }
     [[nodiscard]] uintptr_t base() const noexcept { return base_; }
     [[nodiscard]] size_t size() const noexcept { return size_; }
-
     [[nodiscard]] bool valid() const noexcept { return base_ != 0; }
     explicit operator bool() const noexcept { return valid(); }
 
@@ -61,8 +60,8 @@ private:
 
 class Pointer {
 public:
-    Pointer(Memory& memory, uintptr_t address) noexcept
-        : memory_(&memory), address_(address), valid_(address != 0) {}
+    Pointer(Process& process, uintptr_t address) noexcept
+        : process_(&process), address_(address), valid_(address != 0) {}
 
     Pointer& offset(uintptr_t offset) noexcept;
 
@@ -80,51 +79,25 @@ public:
     bool write(const T& value) const noexcept;
 
 private:
-    Memory* memory_;
+    Process* process_;
     uintptr_t address_;
     bool valid_;
 };
 
-class MemoryProtectionGuard {
+class Process {
 public:
-    MemoryProtectionGuard() noexcept = default;
-    MemoryProtectionGuard(Memory& memory, uintptr_t address, size_t size, DWORD newProtect) noexcept;
-    ~MemoryProtectionGuard();
+    Process() noexcept = default;
+    ~Process() { detach(); }
 
-    MemoryProtectionGuard(const MemoryProtectionGuard&) = delete;
-    MemoryProtectionGuard& operator=(const MemoryProtectionGuard&) = delete;
+    Process(const Process&) = delete;
+    Process& operator=(const Process&) = delete;
 
-    MemoryProtectionGuard(MemoryProtectionGuard&& other) noexcept { *this = std::move(other); }
-    MemoryProtectionGuard& operator=(MemoryProtectionGuard&& other) noexcept;
-
-    void restore() noexcept;
-
-    void dismiss() noexcept { active_ = false; }
-
-    [[nodiscard]] bool active() const noexcept { return active_; }
-
-private:
-    Memory* memory_ = nullptr;
-    uintptr_t address_ = 0;
-    size_t size_ = 0;
-    DWORD oldProtect_ = 0;
-    bool active_ = false;
-};
-
-class Memory {
-public:
-    Memory() noexcept = default;
-    ~Memory() { detach(); }
-
-    Memory(const Memory&) = delete;
-    Memory& operator=(const Memory&) = delete;
-
-    Memory(Memory&& other) noexcept { *this = std::move(other); }
-    Memory& operator=(Memory&& other) noexcept;
+    Process(Process&& other) noexcept { *this = std::move(other); }
+    Process& operator=(Process&& other) noexcept;
 
     bool attach(std::wstring_view processName, DWORD access = PROCESS_ALL_ACCESS) noexcept;
     bool attach(DWORD processId, DWORD access = PROCESS_ALL_ACCESS) noexcept;
-    bool attach(HANDLE existingHandle) noexcept; 
+    bool attach(HANDLE existingHandle) noexcept;
     void detach() noexcept;
     [[nodiscard]] bool isAttached() const noexcept { return handle_ != nullptr; }
 
@@ -132,7 +105,6 @@ public:
     [[nodiscard]] HANDLE handle() const noexcept { return handle_; }
     [[nodiscard]] const std::wstring& processName() const noexcept { return processName_; }
 
-    [[nodiscard]] std::optional<Module> getModule(std::wstring_view moduleName) const noexcept;
     [[nodiscard]] Module module(std::wstring_view moduleName) const noexcept;
     [[nodiscard]] std::vector<Module> modules() const noexcept;
 
@@ -160,26 +132,39 @@ public:
         return writeRaw(address, &value, sizeof(T));
     }
 
+    template <typename T>
+    [[nodiscard]] std::vector<T> readArray(uintptr_t address, size_t count) const noexcept {
+        static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+        std::vector<T> values(count);
+        if (!readRaw(address, values.data(), count * sizeof(T))) values.clear();
+        return values;
+    }
+
+    template <typename T>
+    bool writeArray(uintptr_t address, std::span<const T> values) const noexcept {
+        static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+        return writeRaw(address, values.data(), values.size() * sizeof(T));
+    }
+
     [[nodiscard]] std::vector<uint8_t> readBytes(uintptr_t address, size_t size) const noexcept;
     bool writeBytes(uintptr_t address, std::span<const uint8_t> bytes) const noexcept;
 
     [[nodiscard]] std::optional<std::string> readString(uintptr_t address, size_t maxLength = 256) const noexcept;
-    [[nodiscard]] std::optional<std::wstring> readStringW(uintptr_t address, size_t maxLength = 256) const noexcept;
+    [[nodiscard]] std::optional<std::wstring> readWString(uintptr_t address, size_t maxLength = 256) const noexcept;
     bool writeString(uintptr_t address, std::string_view text) const noexcept;
 
     [[nodiscard]] uintptr_t dereference(uintptr_t address) const noexcept { return read<uintptr_t>(address); }
     [[nodiscard]] Pointer pointer(uintptr_t base) noexcept { return Pointer(*this, base); }
 
+    [[nodiscard]] std::optional<uintptr_t> scan(uintptr_t start, size_t size, std::string_view pattern) const noexcept;
+    [[nodiscard]] std::optional<uintptr_t> scan(std::wstring_view moduleName, std::string_view pattern) const noexcept;
+
     bool protect(uintptr_t address, size_t size, DWORD newProtect, DWORD* oldProtect = nullptr) noexcept;
     bool protect(uintptr_t address, size_t size, Protection newProtect, DWORD* oldProtect = nullptr) noexcept {
         return protect(address, size, toWin32(newProtect), oldProtect);
     }
-
-    [[nodiscard]] MemoryProtectionGuard scopedProtect(uintptr_t address, size_t size, DWORD newProtect) noexcept {
-        return MemoryProtectionGuard(*this, address, size, newProtect);
-    }
-    [[nodiscard]] MemoryProtectionGuard scopedProtect(uintptr_t address, size_t size, Protection newProtect) noexcept {
-        return scopedProtect(address, size, toWin32(newProtect));
+    bool restore(uintptr_t address, size_t size, DWORD oldProtect) noexcept {
+        return protect(address, size, oldProtect, nullptr);
     }
 
     [[nodiscard]] uintptr_t allocate(size_t size, DWORD protectFlags = PAGE_EXECUTE_READWRITE) noexcept;
@@ -200,7 +185,7 @@ private:
     mutable DWORD lastError_ = 0;
 };
 
-inline Memory& Memory::operator=(Memory&& other) noexcept {
+inline Process& Process::operator=(Process&& other) noexcept {
     if (this != &other) {
         detach();
         handle_ = other.handle_;
@@ -215,7 +200,7 @@ inline Memory& Memory::operator=(Memory&& other) noexcept {
 
 inline Pointer& Pointer::offset(uintptr_t offset) noexcept {
     if (!valid_) return *this;
-    const uintptr_t dereferenced = memory_->dereference(address_);
+    const uintptr_t dereferenced = process_->dereference(address_);
     if (!dereferenced) {
         valid_ = false;
         address_ = 0;
@@ -227,48 +212,18 @@ inline Pointer& Pointer::offset(uintptr_t offset) noexcept {
 
 template <typename T>
 inline T Pointer::read() const noexcept {
-    return valid_ ? memory_->read<T>(address_) : T{};
+    return valid_ ? process_->read<T>(address_) : T{};
 }
 
 template <typename T>
 inline std::optional<T> Pointer::tryRead() const noexcept {
     if (!valid_) return std::nullopt;
-    return memory_->tryRead<T>(address_);
+    return process_->tryRead<T>(address_);
 }
 
 template <typename T>
 inline bool Pointer::write(const T& value) const noexcept {
-    return valid_ && memory_->write(address_, value);
+    return valid_ && process_->write(address_, value);
 }
 
-inline MemoryProtectionGuard::MemoryProtectionGuard(Memory& memory, uintptr_t address, size_t size, DWORD newProtect) noexcept
-    : memory_(&memory), address_(address), size_(size) {
-    active_ = memory_->protect(address_, size_, newProtect, &oldProtect_);
 }
-
-inline MemoryProtectionGuard::~MemoryProtectionGuard() {
-    restore();
-}
-
-inline MemoryProtectionGuard& MemoryProtectionGuard::operator=(MemoryProtectionGuard&& other) noexcept {
-    if (this != &other) {
-        restore();
-        memory = other.memory_;
-        address_ = other.address_;
-        size_ = other.size_;
-        oldProtect_ = other.oldProtect_;
-        active_ = other.active_;
-        other.active_ = false;
-        other.memory_ = nullptr;
-    }
-    return *this;
-}
-
-inline void MemoryProtectionGuard::restore() noexcept {
-    if (active_ && memory_) {
-        memory_->protect(address_, size_, oldProtect_, nullptr);
-        active_ = false;
-    }
-}
-
-} // namespace mem
