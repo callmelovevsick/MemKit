@@ -1,6 +1,6 @@
 # mem
 
-A small C++20 library for reading and writing the memory of another Windows
+A small C++20/17+ library for reading and writing the memory of another Windows
 process. Two files, no dependencies beyond the Windows SDK: `mem.hpp` and
 `mem.cpp`. Drop them into a Visual Studio project and you're done.
 
