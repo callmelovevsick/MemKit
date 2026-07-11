@@ -1,4 +1,4 @@
-# mem
+# mem-kit
 
 A small C++20 library for reading and writing the memory of another Windows
 process. Two files, no dependencies beyond the Windows SDK: `mem.hpp` and
