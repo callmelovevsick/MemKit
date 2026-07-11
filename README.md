@@ -486,4 +486,3 @@ https://www.youtube.com/@cheat_and_math
 
 This project is an independent redesign and extension built upon the
 concepts learned from those tutorials.
-I LOVE CHEAT_AND_MATH
